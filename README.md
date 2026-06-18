@@ -26,15 +26,62 @@ that maps token ids to logits, plus a config dataclass with the fields the loops
 read. It never imports a concrete architecture, so the same harness trains a
 vanilla transformer or a custom one without change.
 
-## Install
+## Quickstart (60 seconds, CPU, no data)
 
 ```
-pip install -e .            # core
-pip install -e ".[hub,track,dev]"   # + hub push, Aim tracking, tests
+pip install -e .
+lmkit quickstart
 ```
 
-Requires Python 3.10+. CUDA is used when available; everything runs on CPU for
-tests.
+Trains a tiny model on a small bundled corpus and shows the loss falling, then
+samples a few lines. No GPU, no downloads — it runs the real pretrain loop, just
+tiny.
+
+## Setup
+
+Python **3.10–3.12** (3.12 recommended — a few dependencies don't yet ship 3.13/
+3.14 wheels). [`uv`](https://docs.astral.sh/uv/) is the easiest way to pin the
+version and install; plain `venv` + `pip` works too.
+
+### Linux (NVIDIA GPU)
+
+```
+uv venv --python 3.12 && source .venv/bin/activate
+uv pip install -e ".[dev,track]"
+python -c "import torch; print('cuda:', torch.cuda.is_available())"   # True with an NVIDIA driver
+```
+
+`pip install torch` pulls the CUDA build on Linux x86_64, so GPU training works
+out of the box. **AMD / ROCm:** install the ROCm torch wheel instead —
+`uv pip install torch --index-url https://download.pytorch.org/whl/rocm6.2` (match
+your ROCm version) — the rest is unchanged.
+
+### macOS (Apple Silicon)
+
+```
+uv venv --python 3.12 && source .venv/bin/activate
+uv pip install -e ".[dev,track]"
+```
+
+You get the CPU/MPS torch build (there's no CUDA on Mac). The quickstart, tests,
+and small experiments run fine; real from-scratch pretraining wants a Linux NVIDIA
+box (local or rented). Mac is for development.
+
+### Plain pip (either OS)
+
+```
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,track]"
+```
+
+Extras: `hub` (HuggingFace push), `track` (Aim tracking), `dev` (pytest).
+
+## Tests
+
+```
+pytest                                          # core: tokenization, masking, packing
+PYTHONPATH=. pytest examples/llama/test_smoke.py  # the example model, CPU
+```
 
 ## License
 
