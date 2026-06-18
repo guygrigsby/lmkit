@@ -125,12 +125,18 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain") -> int:
         model.train()
         optimizer.zero_grad(set_to_none=True)
         loss_accum = 0.0
+        aux_accum = 0.0
+        has_aux = hasattr(model, "aux_loss")
         for _ in range(tcfg.grad_accum):
             x, y = next(train_loader)
             x, y = x.to(device), y.to(device)
             with autocast_ctx(device, dtype):
-                loss = F.cross_entropy(
-                    model(x).reshape(-1, mcfg.vocab_size), y.reshape(-1)) / tcfg.grad_accum
+                loss = F.cross_entropy(model(x).reshape(-1, mcfg.vocab_size), y.reshape(-1))
+                if has_aux:  # auxiliary loss (MoD router / MoE load-balance / ...)
+                    aux = model.aux_loss()
+                    aux_accum += float(aux)
+                    loss = loss + aux
+                loss = loss / tcfg.grad_accum
             loss.backward()
             loss_accum += loss.item()
 
@@ -151,13 +157,16 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain") -> int:
                      * max(tcfg.log_interval, 1) / max(dt, 1e-9))
             print(f"step {step:6d} | loss {loss_accum:.4f} | {tok_s/1e3:.1f}k tok/s | "
                   f"gnorm {gnorm:.2f} | lr {lr:.2e}")
-            log_metrics(run_, metrics_path, "train", step, {
+            m = {
                 "train_loss": loss_accum, "lr": lr, "grad_norm": gnorm,
                 "tok_per_sec": tok_s, "step_time_ms": 1000 * dt / max(tcfg.log_interval, 1),
                 "tokens_seen": (step + 1) * tcfg.batch_size * tcfg.grad_accum * mcfg.block_size,
                 "tflops": achieved_tflops(n_params, tok_s),
                 "peak_vram_gb": peak_vram_gb(device),
-            })
+            }
+            if has_aux:
+                m["aux_loss"] = aux_accum / max(tcfg.grad_accum, 1)
+            log_metrics(run_, metrics_path, "train", step, m)
             t0 = time.time()
         step += 1
 
