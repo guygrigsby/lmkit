@@ -14,6 +14,9 @@ hub = ["huggingface_hub"]      # push.py
 track = ["aim"]               # observability.py
 dev = ["pytest"]
 
+[project.scripts]
+lmkit = "lmkit.cli:main"
+
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
