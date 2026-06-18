@@ -1,0 +1,22 @@
+[project]
+name = "lmkit"
+version = "0.1.0"
+description = "A small toolkit for training language models from scratch: pretrain, anneal, SFT, tokenizer, eval, and experiment tracking."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Guy Grigsby" }]
+keywords = ["language-model", "training", "pretraining", "sft", "from-scratch"]
+dependencies = ["torch", "tokenizers", "numpy"]
+
+[project.optional-dependencies]
+hub = ["huggingface_hub"]      # push.py
+track = ["aim"]               # observability.py
+dev = ["pytest"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["lmkit*"]
