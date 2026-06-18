@@ -78,6 +78,29 @@ def emit(metrics_path: Path, payload: dict) -> None:
         f.write(json.dumps(payload) + "\n")
 
 
+def log_metrics(run, metrics_path: Path, event: str, step: int, metrics: dict) -> None:
+    """Write one event to metrics.jsonl and track every numeric value to Aim (when
+    a run is active). One call site per logging point keeps both in lockstep."""
+    emit(metrics_path, {"event": event, "step": step, **metrics})
+    if run:
+        for k, v in metrics.items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                run.track(v, name=k, step=step)
+
+
+def peak_vram_gb(device: torch.device) -> float:
+    """Peak allocated VRAM since the last reset (CUDA/ROCm), in GB; 0 on CPU."""
+    if device.type != "cuda":
+        return 0.0
+    return torch.cuda.max_memory_allocated(device) / 1e9
+
+
+def achieved_tflops(n_params: int, tokens_per_sec: float) -> float:
+    """Rough achieved compute: ~6 FLOPs/param/token (fwd+bwd), in TFLOP/s. Divide
+    by your accelerator's peak to get MFU."""
+    return 6.0 * n_params * tokens_per_sec / 1e12
+
+
 def prune_snapshots(out_dir: Path, keep_last: int) -> None:
     if keep_last <= 0:
         return

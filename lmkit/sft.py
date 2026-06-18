@@ -9,6 +9,7 @@ Device-agnostic. Returns 0 on completion/clean SIGTERM, 1 if no windows build,
 """
 from __future__ import annotations
 
+import math
 import signal
 import sys
 import time
@@ -20,7 +21,8 @@ import torch.nn.functional as F
 from .observability import make_run
 from .sft_data import SFTDataset, build_sft_windows
 from .training import (
-    autocast_ctx, build_optimizer, emit, get_lr, resolve_dtype, save_ckpt,
+    achieved_tflops, autocast_ctx, build_optimizer, emit, get_lr, log_metrics,
+    peak_vram_gb, resolve_dtype, save_ckpt,
 )
 
 _STOP = False
@@ -88,11 +90,12 @@ def run(model, cfg, mcfg, *, experiment: str = "sft") -> int:
     if cfg.compile:
         model = torch.compile(model)
 
+    n_params = sum(p.numel() for p in model.parameters())
     print(f"SFT: {len(train_ds):,} train / {len(val_ds):,} val windows, "
           f"{steps_per_epoch:,} steps/epoch x {cfg.epochs} = {cfg.max_steps:,} steps on {device.type}")
     emit(metrics_path, {"event": "start", "step": 0, "max_steps": cfg.max_steps,
                         "train_windows": len(train_ds), "init_from": getattr(cfg, "init_from", "")})
-    run_ = make_run(experiment, hparams={**cfg.to_dict(), **mcfg.to_dict()})
+    run_ = make_run(experiment, hparams={"params": n_params, **cfg.to_dict(), **mcfg.to_dict()})
 
     DataLoader = torch.utils.data.DataLoader
     train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
@@ -135,11 +138,10 @@ def run(model, cfg, mcfg, *, experiment: str = "sft") -> int:
             if improved:
                 best_val = vl
                 save_ckpt(best_path, model, optimizer, step, best_val, mcfg, cfg.compile)
-            emit(metrics_path, {"event": "eval", "step": step, "val_loss": vl,
-                                "best_val": best_val, "improved": improved, "lr": lr})
-            if run_:
-                run_.track(vl, name="val_loss", step=step)
-                run_.track(best_val, name="best_val", step=step)
+            log_metrics(run_, metrics_path, "eval", step, {
+                "val_loss": vl, "val_perplexity": math.exp(min(vl, 20)),
+                "best_val": best_val, "lr": lr, "improved": improved,
+                "epoch": step / max(steps_per_epoch, 1)})
             print(f"step {step:6d} | val {vl:.4f}{' (best)' if improved else ''} | lr {lr:.2e}")
             model.train()
 
@@ -164,19 +166,19 @@ def run(model, cfg, mcfg, *, experiment: str = "sft") -> int:
                 run_.close()
             return 2
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+        gnorm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip))
         optimizer.step()
 
         if step % cfg.log_interval == 0:
             dt = time.time() - t0
             tok_s = cfg.batch_size * cfg.grad_accum * mcfg.block_size * max(cfg.log_interval, 1) / max(dt, 1e-9)
-            emit(metrics_path, {"event": "train", "step": step, "train_loss": loss_accum,
-                                "lr": lr, "tok_per_sec": tok_s})
-            if run_:
-                run_.track(loss_accum, name="train_loss", step=step)
-                run_.track(lr, name="lr", step=step)
-                run_.track(tok_s, name="tok_per_sec", step=step)
-            print(f"step {step:6d} | loss {loss_accum:.4f} | {tok_s/1e3:.1f}k tok/s | lr {lr:.2e}")
+            log_metrics(run_, metrics_path, "train", step, {
+                "train_loss": loss_accum, "lr": lr, "grad_norm": gnorm,
+                "tok_per_sec": tok_s, "step_time_ms": 1000 * dt / max(cfg.log_interval, 1),
+                "tokens_seen": (step + 1) * cfg.batch_size * cfg.grad_accum * mcfg.block_size,
+                "tflops": achieved_tflops(n_params, tok_s),
+                "peak_vram_gb": peak_vram_gb(device), "epoch": step / max(steps_per_epoch, 1)})
+            print(f"step {step:6d} | loss {loss_accum:.4f} | {tok_s/1e3:.1f}k tok/s | gnorm {gnorm:.2f} | lr {lr:.2e}")
             t0 = time.time()
         step += 1
 

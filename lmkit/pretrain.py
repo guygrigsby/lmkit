@@ -21,8 +21,8 @@ import torch.nn.functional as F
 
 from .observability import make_run
 from .training import (
-    TokenDataset, autocast_ctx, build_optimizer, emit, get_lr,
-    prune_snapshots, resolve_dtype, save_ckpt,
+    TokenDataset, achieved_tflops, autocast_ctx, build_optimizer, emit, get_lr,
+    log_metrics, peak_vram_gb, prune_snapshots, resolve_dtype, save_ckpt,
 )
 
 _STOP = False
@@ -107,12 +107,10 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain") -> int:
                 best_val = vl
                 save_ckpt(best_path, model, optimizer, step, best_val, mcfg, tcfg.compile)
             print(f"step {step:6d} | val {vl:.4f}{' (best)' if improved else ''} | lr {lr:.2e}")
-            emit(metrics_path, {"event": "eval", "step": step, "val_loss": vl,
-                                "train_loss": last_train_loss, "lr": lr,
-                                "best_val": best_val, "improved": improved})
-            if run_:
-                run_.track(vl, name="val_loss", step=step)
-                run_.track(best_val, name="best_val", step=step)
+            log_metrics(run_, metrics_path, "eval", step, {
+                "val_loss": vl, "val_perplexity": math.exp(min(vl, 20)),
+                "best_val": best_val, "train_loss": last_train_loss,
+                "lr": lr, "improved": improved})
             model.train()
 
         if step > 0 and step % tcfg.save_interval == 0:
@@ -143,7 +141,7 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain") -> int:
                 run_.close()
             return 2
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), tcfg.grad_clip)
+        gnorm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), tcfg.grad_clip))
         optimizer.step()
         last_train_loss = loss_accum
 
@@ -151,13 +149,15 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain") -> int:
             dt = time.time() - t0
             tok_s = (tcfg.batch_size * tcfg.grad_accum * mcfg.block_size
                      * max(tcfg.log_interval, 1) / max(dt, 1e-9))
-            print(f"step {step:6d} | loss {loss_accum:.4f} | {tok_s/1e3:.1f}k tok/s | lr {lr:.2e}")
-            emit(metrics_path, {"event": "train", "step": step, "train_loss": loss_accum,
-                                "lr": lr, "tok_per_sec": tok_s})
-            if run_:
-                run_.track(loss_accum, name="train_loss", step=step)
-                run_.track(lr, name="lr", step=step)
-                run_.track(tok_s, name="tok_per_sec", step=step)
+            print(f"step {step:6d} | loss {loss_accum:.4f} | {tok_s/1e3:.1f}k tok/s | "
+                  f"gnorm {gnorm:.2f} | lr {lr:.2e}")
+            log_metrics(run_, metrics_path, "train", step, {
+                "train_loss": loss_accum, "lr": lr, "grad_norm": gnorm,
+                "tok_per_sec": tok_s, "step_time_ms": 1000 * dt / max(tcfg.log_interval, 1),
+                "tokens_seen": (step + 1) * tcfg.batch_size * tcfg.grad_accum * mcfg.block_size,
+                "tflops": achieved_tflops(n_params, tok_s),
+                "peak_vram_gb": peak_vram_gb(device),
+            })
             t0 = time.time()
         step += 1
 
