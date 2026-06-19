@@ -81,17 +81,37 @@ def _is_val(doc: str, val_every: int) -> bool:
 
 
 def shard_corpus(files, out_dir, tokenizer, *, shard_tokens: int = 500_000_000,
-                 val_every: int = 100, text_key: str = "text") -> dict:
-    """Tokenize `files` into train/val shards under `out_dir`. Returns token counts."""
+                 val_every: int = 100, text_key: str = "text",
+                 batch_size: int = 8192) -> dict:
+    """Tokenize `files` into train/val shards under `out_dir`. Returns token counts.
+
+    Docs are encoded in batches via ``tokenizer.encode_batch`` so the Rust
+    tokenizer parallelizes across all cores — single-doc ``encode`` in a Python
+    loop pins to ~one core (orders of magnitude slower on a big corpus). Output is
+    byte-identical to the per-doc path: the val/train split is content-hashed
+    (order-independent) and encode order is preserved.
+    """
     out_dir = Path(out_dir)
     eot = tokenizer.token_to_id("<|endoftext|>")
     train = ShardWriter(out_dir, "train", shard_tokens)
     val = ShardWriter(out_dir, "val", shard_tokens)
-    for fp in files:
-        for doc in _docs(Path(fp), text_key):
-            ids = tokenizer.encode(doc).ids
+
+    def _flush(docs: list) -> None:
+        for doc, enc in zip(docs, tokenizer.encode_batch(docs)):
+            ids = enc.ids
             ids.append(eot)
             (val if _is_val(doc, val_every) else train).add(np.array(ids, dtype=np.uint16))
+
+    batch: list = []
+    for fp in files:
+        for doc in _docs(Path(fp), text_key):
+            batch.append(doc)
+            if len(batch) >= batch_size:
+                _flush(batch)
+                batch = []
+    if batch:
+        _flush(batch)
+
     train.close()
     val.close()
     return {"train_tokens": train.total, "val_tokens": val.total}
