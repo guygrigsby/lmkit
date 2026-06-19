@@ -76,7 +76,7 @@ func testRun() fleet.Run {
 func TestRunHappyPath(t *testing.T) {
 	r := &scriptRunner{}
 	r.script("is-active", "active\n", nil) // verification passes
-	if err := doRun(r, "moe", testRun(), "trig"); err != nil {
+	if err := doRun(r, "moe", testRun(), "trig", ""); err != nil {
 		t.Fatalf("doRun: %v", err)
 	}
 	r.assertOrder(t,
@@ -98,7 +98,7 @@ func TestRunHappyPath(t *testing.T) {
 func TestRunEnableFailsRollback(t *testing.T) {
 	r := &scriptRunner{}
 	r.script("enable --now", "", errors.New("enable boom"))
-	err := doRun(r, "moe", testRun(), "trig")
+	err := doRun(r, "moe", testRun(), "trig", "")
 	if err == nil {
 		t.Fatalf("expected error when enable fails")
 	}
@@ -118,7 +118,7 @@ func TestRunEnableFailsRollback(t *testing.T) {
 func TestRunVerifyInactiveRollback(t *testing.T) {
 	r := &scriptRunner{}
 	r.script("is-active", "inactive\n", errors.New("inactive"))
-	err := doRun(r, "moe", testRun(), "trig")
+	err := doRun(r, "moe", testRun(), "trig", "")
 	if err == nil {
 		t.Fatalf("expected error when verify shows inactive")
 	}
@@ -130,7 +130,7 @@ func TestRunVerifyInactiveRollback(t *testing.T) {
 func TestRunLockContentionAborts(t *testing.T) {
 	r := &scriptRunner{}
 	r.script("mkdir", "", errors.New("File exists"))
-	err := doRun(r, "moe", testRun(), "trig")
+	err := doRun(r, "moe", testRun(), "trig", "")
 	if err == nil {
 		t.Fatalf("expected error on lock contention")
 	}

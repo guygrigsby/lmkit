@@ -52,7 +52,7 @@ func runRun(args []string) error {
 		if err != nil {
 			return err
 		}
-		return doRun(runner, w.project, w.run, w.sshHost)
+		return doRun(runner, w.project, w.run, w.sshHost, w.gpuWrap)
 	}
 
 	// bare project -> all runs, each an independent transaction.
@@ -75,7 +75,7 @@ func runRun(args []string) error {
 			failed++
 			continue
 		}
-		if err := doRun(runner, man.Project, rn, box.SSH); err != nil {
+		if err := doRun(runner, man.Project, rn, box.SSH, box.GpuWrap); err != nil {
 			fmt.Fprintf(os.Stderr, "lmkit run %s/%s: %v\n", man.Project, rn.Name, err)
 			failed++
 			continue
@@ -173,8 +173,8 @@ func releaseStep(r remote.Runner, host, project, run string) txn.Step {
 
 // doRun deploys (or updates) a worker's persistent unit and starts it, as one
 // ACID transaction. Idempotent: re-running rewrites the unit and restarts.
-func doRun(r remote.Runner, project string, run fleet.Run, host string) error {
-	unitText, err := unit.Render(project, run)
+func doRun(r remote.Runner, project string, run fleet.Run, host, gpuWrap string) error {
+	unitText, err := unit.Render(project, run, gpuWrap)
 	if err != nil {
 		return err
 	}

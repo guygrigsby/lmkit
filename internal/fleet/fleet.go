@@ -9,9 +9,12 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Box is one entry under [box.<name>] in fleet.toml: an ssh alias/host.
+// Box is one entry under [box.<name>] in fleet.toml: an ssh alias/host and an
+// optional generic exec-wrapper for that box's GPU jobs (gpu_wrap), e.g.
+// `gputex run --gpu {gpu} "{label}" --`. Empty = no wrapper (not forced).
 type Box struct {
-	SSH string `toml:"ssh"`
+	SSH     string `toml:"ssh"`
+	GpuWrap string `toml:"gpu_wrap"`
 }
 
 // Fleet is the set of boxes declared in fleet.toml, keyed by box name.

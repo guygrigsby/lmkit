@@ -20,7 +20,7 @@ func TestRenderMoe16eGolden(t *testing.T) {
 		OutDir:  "checkpoints-16e",
 		Cmd:     "python train.py --n-experts 16 --out-dir checkpoints-16e --max-steps 200000",
 	}
-	got, err := Render("moe", r)
+	got, err := Render("moe", r, "")
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestRenderGPUEnvCuda(t *testing.T) {
 		Workdir: "/srv/moe", OutDir: "checkpoints-8e",
 		Cmd: "python train.py",
 	}
-	got, err := Render("moe", r)
+	got, err := Render("moe", r, "")
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestRenderManifestEnvSortedDeterministic(t *testing.T) {
 		Workdir: "~/m", OutDir: "out", Cmd: "python train.py",
 		Env: map[string]string{"ZED": "1", "AIM_REPO": "/aim"},
 	}
-	got, err := Render("moe", r)
+	got, err := Render("moe", r, "")
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -93,8 +93,33 @@ func TestRenderRejectsBadGPU(t *testing.T) {
 		Name: "x", Box: "trig", Venv: "~/v", GPU: "tpu:0",
 		Workdir: "~/m", OutDir: "out", Cmd: "python train.py",
 	}
-	if _, err := Render("moe", r); err == nil {
+	if _, err := Render("moe", r, ""); err == nil {
 		t.Fatalf("expected error for bad gpu spec")
+	}
+}
+
+// A non-empty gpu_wrap is prepended to ExecStart with {gpu}/{label} substituted;
+// an empty wrap leaves ExecStart bare (the wrapper is opt-in, never forced).
+func TestRenderGpuWrap(t *testing.T) {
+	r := fleet.Run{
+		Name: "16e", Box: "trig", Venv: "~/venvs/rocm", GPU: "rocm:0",
+		Workdir: "~/projects/training/moe", OutDir: "checkpoints-16e",
+		Cmd: "python train.py --n-experts 16",
+	}
+	got, err := Render("moe", r, `gputex run --gpu {gpu} "{label}" --`)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	want := `ExecStart=gputex run --gpu rocm0 "lmkit-moe-16e" -- %h/venvs/rocm/bin/python train.py --n-experts 16`
+	if !strings.Contains(got, want) {
+		t.Errorf("ExecStart not wrapped.\ngot:\n%s\nwant line:\n%s", got, want)
+	}
+	bare, err := Render("moe", r, "")
+	if err != nil {
+		t.Fatalf("Render bare: %v", err)
+	}
+	if strings.Contains(bare, "gputex") {
+		t.Errorf("empty wrap must not add a prefix:\n%s", bare)
 	}
 }
 
@@ -103,7 +128,7 @@ func TestRenderRejectsEmptyCmd(t *testing.T) {
 		Name: "x", Box: "trig", Venv: "~/v", GPU: "rocm:0",
 		Workdir: "~/m", OutDir: "out", Cmd: "   ",
 	}
-	if _, err := Render("moe", r); err == nil {
+	if _, err := Render("moe", r, ""); err == nil {
 		t.Fatalf("expected error for empty cmd")
 	}
 }

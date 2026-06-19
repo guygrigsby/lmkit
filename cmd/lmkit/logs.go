@@ -27,6 +27,7 @@ type resolved struct {
 	project string
 	run     fleet.Run
 	sshHost string
+	gpuWrap string
 }
 
 // resolveWorker loads the manifest and fleet, finds the named run in the
@@ -52,7 +53,7 @@ func resolveWorker(manifestPath, project, run string) (resolved, error) {
 		if !ok {
 			return resolved{}, fmt.Errorf("box %q (run %s/%s) not in fleet config", r.Box, project, run)
 		}
-		return resolved{project: project, run: r, sshHost: box.SSH}, nil
+		return resolved{project: project, run: r, sshHost: box.SSH, gpuWrap: box.GpuWrap}, nil
 	}
 	return resolved{}, fmt.Errorf("run %q not found in manifest for project %q", run, project)
 }

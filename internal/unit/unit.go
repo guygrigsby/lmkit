@@ -34,7 +34,14 @@ func expandTilde(p string) string {
 // resolved against {venv}/bin (e.g. "python ..." -> "{venv}/bin/python ...").
 // The GPU env line comes from fleet.GPUEnv; any manifest env entries follow in
 // sorted key order for deterministic output.
-func Render(project string, r fleet.Run) (string, error) {
+//
+// gpuWrap is an optional, generic exec-wrapper template (from the box's
+// gpu_wrap). When non-empty it is prepended to ExecStart, with {label} replaced
+// by the unit name and {gpu} by the run's normalized GPU id (e.g. "cuda0"). This
+// is how a GPU mutex like gputex is hooked in WITHOUT lmkit knowing about it:
+// the lock is acquired when systemd starts the unit and released when the
+// wrapped process exits. Empty gpuWrap = bare ExecStart (no wrapper, not forced).
+func Render(project string, r fleet.Run, gpuWrap string) (string, error) {
 	gpuEnv, err := fleet.GPUEnv(r.GPU)
 	if err != nil {
 		return "", err
@@ -48,6 +55,13 @@ func Render(project string, r fleet.Run) (string, error) {
 	execStart := venv + "/bin/" + fields[0]
 	if len(fields) > 1 {
 		execStart += " " + strings.Join(fields[1:], " ")
+	}
+	if w := strings.TrimSpace(gpuWrap); w != "" {
+		label := "lmkit-" + project + "-" + r.Name
+		gpuID := strings.Replace(r.GPU, ":", "", 1) // "cuda:0" -> "cuda0"
+		w = strings.NewReplacer("{label}", label, "{gpu}", gpuID).Replace(w)
+		w = expandTilde(w) // a leading ~/ (e.g. ~/go/bin/gputex) -> %h; systemd --user PATH won't find a bare binary
+		execStart = w + " " + execStart
 	}
 
 	var b strings.Builder
