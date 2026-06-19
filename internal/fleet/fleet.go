@@ -46,6 +46,12 @@ type Run struct {
 	OutDir  string            `toml:"out_dir"`
 	Cmd     string            `toml:"cmd"`
 	Env     map[string]string `toml:"env"`
+	// DependsOn names another run in the same manifest that must finish before
+	// this one starts (e.g. 32e depends-on 16e: they share a GPU's VRAM and
+	// cannot co-run). Declarative only for now; enforcement is a follow-up on
+	// bead lmkit-wp5. Until then the dependent worker is started by hand once
+	// its prerequisite finishes.
+	DependsOn string `toml:"depends-on"`
 }
 
 // Manifest is a per-project lmkit.toml: a project name and its worker runs.
