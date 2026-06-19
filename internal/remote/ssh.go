@@ -30,6 +30,9 @@ func NewSSHRunner() *SSHRunner {
 func (r *SSHRunner) Run(c Cmd) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.Command(r.bin, r.argFn(c)...)
+	if c.Stdin != "" {
+		cmd.Stdin = strings.NewReader(c.Stdin)
+	}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

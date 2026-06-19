@@ -5,9 +5,12 @@
 package remote
 
 // Cmd is a command to run on a remote box. Args is the argv to execute there.
+// Stdin, if non-empty, is fed to the remote process's standard input (used to
+// deliver a unit file's contents to a `cat >` on the box).
 type Cmd struct {
-	Host string
-	Args []string
+	Host  string
+	Args  []string
+	Stdin string
 }
 
 // Runner runs a Cmd on its Host and returns captured stdout. Everything

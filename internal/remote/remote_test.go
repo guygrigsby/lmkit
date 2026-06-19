@@ -100,6 +100,22 @@ func TestSSHRunnerCapturesStdout(t *testing.T) {
 	}
 }
 
+// TestSSHRunnerFeedsStdin verifies Cmd.Stdin is delivered to the remote
+// process's standard input. We stub the binary with `cat`, which echoes stdin
+// to stdout, and assert the captured stdout equals the Stdin we supplied.
+func TestSSHRunnerFeedsStdin(t *testing.T) {
+	r := NewSSHRunner()
+	r.bin = "/bin/cat"
+	r.argFn = func(c Cmd) []string { return nil }
+	out, err := r.Run(Cmd{Host: "ignored", Stdin: "unit file body\n"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if out != "unit file body\n" {
+		t.Fatalf("stdin not fed: got stdout %q", out)
+	}
+}
+
 // TestSSHRunnerStreamPropagatesExit verifies Stream wires the child process and
 // returns its exit status. A non-zero remote exit must surface as an error; a
 // clean exit must return nil. We stub the binary so no real ssh is invoked.
