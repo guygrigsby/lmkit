@@ -1,0 +1,28 @@
+name: release
+# Build the lmkit CLI for every platform on a version tag and attach the
+# binaries to a GitHub release, so users download instead of compiling.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # create the release + upload assets
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: go test ./...
+      - name: cross-compile
+        run: make dist
+      - name: checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+      - name: release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
