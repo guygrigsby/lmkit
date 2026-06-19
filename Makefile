@@ -5,8 +5,11 @@ PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 
 .PHONY: build test vet fmt install-cli dist clean
 
+# Output to bin/ — `go build ./cmd/lmkit` would write ./lmkit, colliding with
+# the Python lmkit/ package dir in the repo root.
 build:
-	go build $(CMD)
+	@mkdir -p bin
+	go build -o bin/$(BIN) $(CMD)
 
 test:
 	go test ./...

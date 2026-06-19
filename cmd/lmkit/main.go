@@ -23,11 +23,11 @@ import (
 const usage = `lmkit - local fleet ops for lmkit training workers
 
 usage:
-  lmkit status [--manifest PATH] [--box NAME] [--json]
+  lmkit status [--box NAME] [--json]
   lmkit logs   <project/run> [--manifest PATH] [-f]
   lmkit run    <project/run | project> [--manifest PATH]
-  lmkit start  <project/run> [--manifest PATH]
-  lmkit stop   <project/run> [--manifest PATH]
+  lmkit start  <project/run> [--manifest PATH] | --all [--box NAME]
+  lmkit stop   <project/run> [--manifest PATH] | --all [--box NAME]
 
 status reads each worker's systemd unit state and metrics.jsonl tail over ssh
 and prints a table (or JSON with --json).
@@ -112,7 +112,6 @@ func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 
 func runStatus(args []string) error {
 	fs := newFlagSet("status")
-	manifestPath := fs.String("manifest", "lmkit.toml", "path to the project manifest")
 	boxFilter := fs.String("box", "", "only show workers on this box")
 	asJSON := fs.Bool("json", false, "emit JSON instead of a table")
 	if err := fs.Parse(args); err != nil {
@@ -123,15 +122,11 @@ func runStatus(args []string) error {
 	if err != nil {
 		return err
 	}
-	man, err := fleet.LoadManifest(*manifestPath)
-	if err != nil {
-		return err
-	}
 
 	runner := remote.NewSSHRunner()
 	now := float64(time.Now().Unix())
 
-	statuses := gatherStatuses(man, flt, runner, now, *boxFilter)
+	statuses := gatherStatuses(flt, runner, now, *boxFilter)
 
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -142,52 +137,42 @@ func runStatus(args []string) error {
 	return nil
 }
 
-// gatherStatuses assembles a WorkerStatus for every run (optionally filtered to
-// one box) concurrently: one goroutine per worker, each doing its own ssh. An
-// unreachable box yields Reachable=false and never aborts the others. Results
-// come back in a stable (manifest) order.
-func gatherStatuses(man fleet.Manifest, flt fleet.Fleet, runner remote.Runner, now float64, boxFilter string) []metrics.WorkerStatus {
-	type indexed struct {
-		i  int
-		ws metrics.WorkerStatus
-	}
-	out := make(chan indexed)
+// gatherStatuses discovers every deployed worker across the fleet (optionally
+// filtered to one box) — no manifest. One goroutine per box globs its runs_root
+// for metrics.jsonl and resolves each worker over ssh; an unreachable box yields
+// a single Reachable=false row and never aborts the others. Rows are sorted by
+// box then project/run for stable output.
+func gatherStatuses(flt fleet.Fleet, runner remote.Runner, now float64, boxFilter string) []metrics.WorkerStatus {
+	out := make(chan []metrics.WorkerStatus)
 	var wg sync.WaitGroup
-
-	n := 0
-	for i, r := range man.Run {
-		if boxFilter != "" && r.Box != boxFilter {
+	for name, box := range flt.Box {
+		if boxFilter != "" && name != boxFilter {
 			continue
 		}
-		n++
 		wg.Add(1)
-		go func(i int, r fleet.Run) {
+		go func(name string, box fleet.Box) {
 			defer wg.Done()
-			ws := metrics.WorkerStatus{Project: man.Project, Run: r.Name, Box: r.Box}
-			box, ok := flt.Box[r.Box]
-			if !ok {
-				// Box not in the fleet config: treat as unreachable (no ssh host).
-				out <- indexed{i, ws}
-				return
-			}
-			out <- indexed{i, metrics.Assemble(man.Project, r, box.SSH, runner, now)}
-		}(i, r)
+			out <- metrics.DiscoverBox(runner, name, box.SSH, box.RunsRootOr(), now)
+		}(name, box)
 	}
-
 	go func() {
 		wg.Wait()
 		close(out)
 	}()
 
-	res := make([]indexed, 0, n)
-	for r := range out {
-		res = append(res, r)
+	var statuses []metrics.WorkerStatus
+	for ws := range out {
+		statuses = append(statuses, ws...)
 	}
-	sort.Slice(res, func(a, b int) bool { return res[a].i < res[b].i })
-	statuses := make([]metrics.WorkerStatus, len(res))
-	for i, r := range res {
-		statuses[i] = r.ws
-	}
+	sort.Slice(statuses, func(a, b int) bool {
+		if statuses[a].Box != statuses[b].Box {
+			return statuses[a].Box < statuses[b].Box
+		}
+		if statuses[a].Project != statuses[b].Project {
+			return statuses[a].Project < statuses[b].Project
+		}
+		return statuses[a].Run < statuses[b].Run
+	})
 	return statuses
 }
 

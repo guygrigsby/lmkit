@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+bin/
 .venv/
 venv/
 # never let training-specific config or secrets leak into the public repo

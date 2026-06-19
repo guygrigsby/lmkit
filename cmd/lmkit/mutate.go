@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/guygrigsby/lmkit/internal/fleet"
 	"github.com/guygrigsby/lmkit/internal/metrics"
@@ -93,12 +94,23 @@ func runRun(args []string) error {
 func runStartStop(op string, args []string) error {
 	fs := newFlagSet(op)
 	manifestPath := fs.String("manifest", "lmkit.toml", "path to the project manifest")
+	all := fs.Bool("all", false, "apply to every worker discovered across the fleet")
+	boxFilter := fs.String("box", "", "with --all, limit to this box")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
 	}
+	runner := remote.NewSSHRunner()
+
+	if *all {
+		if len(pos) != 0 {
+			return fmt.Errorf("usage: lmkit %s --all [--box NAME]", op)
+		}
+		return startStopAll(op, runner, *boxFilter)
+	}
+
 	if len(pos) != 1 {
-		return fmt.Errorf("usage: lmkit %s <project/run> [--manifest PATH]", op)
+		return fmt.Errorf("usage: lmkit %s <project/run> [--manifest PATH] | --all [--box NAME]", op)
 	}
 	project, run, err := parseWorker(pos[0])
 	if err != nil {
@@ -108,11 +120,55 @@ func runStartStop(op string, args []string) error {
 	if err != nil {
 		return err
 	}
-	runner := remote.NewSSHRunner()
 	if op == "start" {
 		return doStart(runner, w.project, w.run.Name, w.sshHost)
 	}
 	return doStop(runner, w.project, w.run.Name, w.sshHost)
+}
+
+// startStopAll applies op (start|stop) to every worker discovered across the
+// fleet (no manifest) — each its own ACID transaction; one failure never aborts
+// the rest. Discovery is the same fleet glob `status` uses, so an unreachable
+// box is reported and skipped. (A worker deployed but never run has no
+// metrics.jsonl and so is not discovered — start it by name once.)
+func startStopAll(op string, runner remote.Runner, boxFilter string) error {
+	flt, err := fleet.LoadFleet(fleetConfigPath())
+	if err != nil {
+		return err
+	}
+	workers := gatherStatuses(flt, runner, float64(time.Now().Unix()), boxFilter)
+	var acted, failed int
+	for _, w := range workers {
+		if !w.Reachable {
+			fmt.Fprintf(os.Stderr, "lmkit %s: box %q unreachable\n", op, w.Box)
+			failed++
+			continue
+		}
+		box, ok := flt.Box[w.Box]
+		if !ok {
+			continue
+		}
+		acted++
+		var e error
+		if op == "start" {
+			e = doStart(runner, w.Project, w.Run, box.SSH)
+		} else {
+			e = doStop(runner, w.Project, w.Run, box.SSH)
+		}
+		if e != nil {
+			fmt.Fprintf(os.Stderr, "lmkit %s %s/%s: %v\n", op, w.Project, w.Run, e)
+			failed++
+			continue
+		}
+		fmt.Printf("lmkit %s %s/%s: ok\n", op, w.Project, w.Run)
+	}
+	if acted == 0 && failed == 0 {
+		return fmt.Errorf("no workers discovered across the fleet")
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d %s op(s) failed", failed, op)
+	}
+	return nil
 }
 
 // lockDir is the per-worker lock directory path (a leading ~/ is expanded by

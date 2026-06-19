@@ -9,12 +9,29 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Box is one entry under [box.<name>] in fleet.toml: an ssh alias/host and an
-// optional generic exec-wrapper for that box's GPU jobs (gpu_wrap), e.g.
-// `gputex run --gpu {gpu} "{label}" --`. Empty = no wrapper (not forced).
+// Box is one entry under [box.<name>] in fleet.toml: an ssh alias/host, an
+// optional generic exec-wrapper for that box's GPU jobs (gpu_wrap, e.g.
+// `gputex run --gpu {gpu} "{label}" --`; empty = no wrapper, not forced), and an
+// optional runs_root — the directory whose `*/checkpoints*/metrics.jsonl` files
+// `lmkit status` globs to discover deployed workers without a manifest. Empty
+// runs_root means use DefaultRunsRoot; it is passed to the box literally (a
+// leading ~ is expanded by the box's remote shell, never locally).
 type Box struct {
-	SSH     string `toml:"ssh"`
-	GpuWrap string `toml:"gpu_wrap"`
+	SSH      string `toml:"ssh"`
+	GpuWrap  string `toml:"gpu_wrap"`
+	RunsRoot string `toml:"runs_root"`
+}
+
+// DefaultRunsRoot is the directory lmkit globs for metrics.jsonl when a box
+// declares no runs_root. The leading ~ is expanded by the box's remote shell.
+const DefaultRunsRoot = "~/projects/training"
+
+// RunsRootOr returns the box's RunsRoot, or DefaultRunsRoot when it is empty.
+func (b Box) RunsRootOr() string {
+	if b.RunsRoot == "" {
+		return DefaultRunsRoot
+	}
+	return b.RunsRoot
 }
 
 // Fleet is the set of boxes declared in fleet.toml, keyed by box name.
