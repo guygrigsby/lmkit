@@ -46,13 +46,15 @@ func main() {
 	}
 }
 
-// fleetConfigPath returns the path to fleet.toml under the user's config dir,
-// falling back to $HOME/.config when os.UserConfigDir is unavailable.
+// fleetConfigPath returns the path to fleet.toml under the XDG config dir
+// ($XDG_CONFIG_HOME, else ~/.config). Not os.UserConfigDir: on macOS that
+// resolves to ~/Library/Application Support, but lmkit config lives in ~/.config.
 func fleetConfigPath() string {
-	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
-		return filepath.Join(dir, "lmkit", "fleet.toml")
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		dir = filepath.Join(os.Getenv("HOME"), ".config")
 	}
-	return filepath.Join(os.Getenv("HOME"), ".config", "lmkit", "fleet.toml")
+	return filepath.Join(dir, "lmkit", "fleet.toml")
 }
 
 // newFlagSet returns a flag set for a subcommand whose Usage prints the
@@ -145,14 +147,21 @@ func gatherStatuses(man fleet.Manifest, flt fleet.Fleet, runner remote.Runner, n
 	return statuses
 }
 
+// freshWindow is how recent the last metric must be for an active unit to read
+// "yes". It must exceed the worker's log cadence: metrics log every log_interval
+// steps (default 20), which at ~20k tok/s is ~2min between lines, plus eval
+// gaps — so 60s would flap a healthy worker to "no". 5min covers the cadence
+// with margin; a longer silence on an active unit means it's wedged, not alive.
+const freshWindow = 5 * time.Minute
+
 // aliveLabel renders the ALIVE column: a worker is alive when its box is
-// reachable, its unit is active, and its last metric is recent (< 60s). An
+// reachable, its unit is active, and its last metric is within freshWindow. An
 // unreachable box is its own label so it stands apart from a stopped worker.
 func aliveLabel(ws metrics.WorkerStatus) string {
 	if !ws.Reachable {
 		return "unreachable"
 	}
-	if ws.UnitActive && ws.LastSeen > 0 && ws.LastSeen < 60*time.Second {
+	if ws.UnitActive && ws.LastSeen > 0 && ws.LastSeen < freshWindow {
 		return "yes"
 	}
 	if ws.UnitActive && ws.LastSeen == 0 {

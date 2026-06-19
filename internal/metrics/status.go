@@ -81,14 +81,15 @@ func Assemble(project string, r fleet.Run, sshHost string, runner remote.Runner,
 		return ws
 	}
 
-	// Read the metrics tail. Run it through a shell so a leading ~/ in workdir
-	// expands on the box. A missing file fails non-zero but that is not a
+	// Read the metrics tail. ssh joins argv into one string run by the remote
+	// login shell, which expands a leading ~/ in workdir — so pass plain args,
+	// NOT an `sh -c "..."` wrapper (that extra layer mangles the quoting and
+	// yields empty output). A missing file fails non-zero but that is not a
 	// transport failure: the box already proved reachable above.
 	path := fmt.Sprintf("%s/%s/metrics.jsonl", r.Workdir, r.OutDir)
-	tailCmd := fmt.Sprintf("tail -c 65536 %s", path)
 	tail, terr := runner.Run(remote.Cmd{
 		Host: sshHost,
-		Args: []string{"sh", "-c", tailCmd},
+		Args: []string{"tail", "-c", "65536", path},
 	})
 	if terr != nil || strings.TrimSpace(tail) == "" {
 		return ws

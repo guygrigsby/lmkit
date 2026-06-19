@@ -79,7 +79,8 @@ func TestAliveLabel(t *testing.T) {
 	}{
 		{"unreachable", metrics.WorkerStatus{Reachable: false}, "unreachable"},
 		{"reachable active fresh", metrics.WorkerStatus{Reachable: true, UnitActive: true, LastSeen: 5 * time.Second}, "yes"},
-		{"reachable active stale", metrics.WorkerStatus{Reachable: true, UnitActive: true, LastSeen: 90 * time.Second}, "no"},
+		{"reachable active fresh within window", metrics.WorkerStatus{Reachable: true, UnitActive: true, LastSeen: 90 * time.Second}, "yes"},
+		{"reachable active stale", metrics.WorkerStatus{Reachable: true, UnitActive: true, LastSeen: 6 * time.Minute}, "no"},
 		{"reachable inactive", metrics.WorkerStatus{Reachable: true, UnitActive: false, LastSeen: 1 * time.Second}, "no"},
 	}
 	for _, tt := range tests {
