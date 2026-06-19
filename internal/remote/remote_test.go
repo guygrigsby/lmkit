@@ -100,6 +100,27 @@ func TestSSHRunnerCapturesStdout(t *testing.T) {
 	}
 }
 
+// TestSSHRunnerStreamPropagatesExit verifies Stream wires the child process and
+// returns its exit status. A non-zero remote exit must surface as an error; a
+// clean exit must return nil. We stub the binary so no real ssh is invoked.
+func TestSSHRunnerStreamPropagatesExit(t *testing.T) {
+	r := NewSSHRunner()
+	r.bin = "/bin/sh"
+	r.argFn = func(c Cmd) []string {
+		return []string{"-c", "exit 7"}
+	}
+	if err := r.Stream(Cmd{Host: "ignored", Args: []string{"whatever"}}); err == nil {
+		t.Fatalf("expected error on non-zero exit, got nil")
+	}
+
+	r.argFn = func(c Cmd) []string {
+		return []string{"-c", "exit 0"}
+	}
+	if err := r.Stream(Cmd{Host: "ignored", Args: []string{"whatever"}}); err != nil {
+		t.Fatalf("clean exit: unexpected err: %v", err)
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

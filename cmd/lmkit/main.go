@@ -24,9 +24,12 @@ const usage = `lmkit - local fleet ops for lmkit training workers
 
 usage:
   lmkit status [--manifest PATH] [--box NAME] [--json]
+  lmkit logs   <project/run> [--manifest PATH] [-f]
 
 status reads each worker's systemd unit state and metrics.jsonl tail over ssh
 and prints a table (or JSON with --json).
+
+logs streams a worker's systemd journal over ssh (journalctl --user); -f follows.
 `
 
 func main() {
@@ -38,6 +41,11 @@ func main() {
 	case "status":
 		if err := runStatus(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "lmkit status:", err)
+			os.Exit(1)
+		}
+	case "logs":
+		if err := runLogs(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "lmkit logs:", err)
 			os.Exit(1)
 		}
 	default:

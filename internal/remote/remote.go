@@ -16,6 +16,14 @@ type Runner interface {
 	Run(Cmd) (stdout string, err error)
 }
 
+// Streamer runs a Cmd with the child's stdio wired straight to the local
+// terminal (no buffering) so output appears live and Ctrl-C / `journalctl -f`
+// work. Used for `logs -f`; the buffered Run is for everything that needs the
+// output as a value.
+type Streamer interface {
+	Stream(Cmd) error
+}
+
 // sshArgs builds the argv passed to the ssh binary for a Cmd:
 //
 //	ssh <host> -- <args...>

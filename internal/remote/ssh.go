@@ -3,6 +3,7 @@ package remote
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -39,4 +40,20 @@ func (r *SSHRunner) Run(c Cmd) (string, error) {
 		return stdout.String(), fmt.Errorf("ssh %s: %w: %s", c.Host, err, msg)
 	}
 	return stdout.String(), nil
+}
+
+// Stream executes the Cmd on its host with the child ssh process inheriting the
+// local stdio: its stdout/stderr go straight to the terminal (unbuffered, so
+// `journalctl -f` appears live) and its stdin comes from the terminal (so a
+// local Ctrl-C is delivered to the remote follower). It returns the child's
+// exit status as an error.
+func (r *SSHRunner) Stream(c Cmd) error {
+	cmd := exec.Command(r.bin, r.argFn(c)...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ssh %s: %w", c.Host, err)
+	}
+	return nil
 }
