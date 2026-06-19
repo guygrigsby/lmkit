@@ -91,6 +91,25 @@ func newFlagSet(name string) *flag.FlagSet {
 	return fs
 }
 
+// parseArgs parses flags that may appear before OR after positionals. The stdlib
+// flag package stops at the first positional, so a natural `lmkit run foo/bar
+// --manifest x` would silently drop the flag. This resumes parsing after each
+// positional and returns the collected positionals.
+func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positionals []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return positionals, nil
+		}
+		positionals = append(positionals, rest[0])
+		args = rest[1:]
+	}
+}
+
 func runStatus(args []string) error {
 	fs := newFlagSet("status")
 	manifestPath := fs.String("manifest", "lmkit.toml", "path to the project manifest")

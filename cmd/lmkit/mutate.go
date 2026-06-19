@@ -32,13 +32,14 @@ import (
 func runRun(args []string) error {
 	fs := newFlagSet("run")
 	manifestPath := fs.String("manifest", "lmkit.toml", "path to the project manifest")
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseArgs(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if len(pos) != 1 {
 		return fmt.Errorf("usage: lmkit run <project/run | project> [--manifest PATH]")
 	}
-	arg := fs.Arg(0)
+	arg := pos[0]
 	runner := remote.NewSSHRunner()
 
 	// project/run form -> single worker.
@@ -92,13 +93,14 @@ func runRun(args []string) error {
 func runStartStop(op string, args []string) error {
 	fs := newFlagSet(op)
 	manifestPath := fs.String("manifest", "lmkit.toml", "path to the project manifest")
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseArgs(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if len(pos) != 1 {
 		return fmt.Errorf("usage: lmkit %s <project/run> [--manifest PATH]", op)
 	}
-	project, run, err := parseWorker(fs.Arg(0))
+	project, run, err := parseWorker(pos[0])
 	if err != nil {
 		return err
 	}

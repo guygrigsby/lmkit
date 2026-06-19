@@ -72,13 +72,14 @@ func runLogs(args []string) error {
 	fs := newFlagSet("logs")
 	manifestPath := fs.String("manifest", "lmkit.toml", "path to the project manifest")
 	follow := fs.Bool("f", false, "stream the journal live (journalctl -f)")
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseArgs(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if len(pos) != 1 {
 		return fmt.Errorf("usage: lmkit logs <project/run> [-f]")
 	}
-	project, run, err := parseWorker(fs.Arg(0))
+	project, run, err := parseWorker(pos[0])
 	if err != nil {
 		return err
 	}
