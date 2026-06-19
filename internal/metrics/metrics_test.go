@@ -6,10 +6,10 @@ import (
 
 func TestFold(t *testing.T) {
 	tests := []struct {
-		name    string
-		jsonl   string
-		wantOK  bool
-		check   func(t *testing.T, f Folded)
+		name   string
+		jsonl  string
+		wantOK bool
+		check  func(t *testing.T, f Folded)
 	}{
 		{
 			name:   "empty -> not ok",
