@@ -83,6 +83,33 @@ pytest                                          # core: tokenization, masking, p
 PYTHONPATH=. pytest examples/llama/test_smoke.py  # the example model, CPU
 ```
 
+## CLI (fleet ops)
+
+This repo also ships a small **Go** command-line tool, `lmkit`, for running and
+watching training workers across machines from your workstation. It is a separate
+artifact from the Python library above: the **library** trains models (installed
+with `pip`, runs on your GPU boxes); the **CLI** is an ops front-end (a static
+binary, runs on your laptop, reaches the boxes over ssh).
+
+```
+lmkit status                 # roster of every worker across the fleet
+lmkit logs <project/run> -f  # follow a worker's journal
+lmkit run  <project/run>     # deploy a persistent systemd unit and start it
+lmkit start|stop --all       # control every worker
+```
+
+It reads a fleet config (`~/.config/lmkit/fleet.toml`, the boxes) and per-project
+manifests (`lmkit.toml`, how each worker launches). See
+`docs/specs/2026-06-19-lmkit-fleet-ops-cli-design.md`.
+
+**Install the CLI** — download a binary from the
+[releases](https://github.com/guygrigsby/lmkit/releases) (each tagged
+`cli/vX.Y.Z`; the assets are the CLI, not the Python library) or build it:
+
+```
+go install github.com/guygrigsby/lmkit/cmd/lmkit@latest   # or: make install-cli
+```
+
 ## License
 
 MIT.

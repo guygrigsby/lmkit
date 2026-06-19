@@ -1,9 +1,11 @@
 name: release
-# Build the lmkit CLI for every platform on a version tag and attach the
-# binaries to a GitHub release, so users download instead of compiling.
+# Build the lmkit CLI for every platform on a CLI version tag and attach the
+# binaries to a GitHub release, so users download instead of compiling. Tags are
+# `cli/vX.Y.Z` (NOT bare `vX.Y.Z`) so CLI releases stay distinct from the Python
+# library's own versioning — this repo ships both.
 on:
   push:
-    tags: ['v*']
+    tags: ['cli/v*']
 
 permissions:
   contents: write   # create the release + upload assets
