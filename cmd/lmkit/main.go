@@ -25,11 +25,18 @@ const usage = `lmkit - local fleet ops for lmkit training workers
 usage:
   lmkit status [--manifest PATH] [--box NAME] [--json]
   lmkit logs   <project/run> [--manifest PATH] [-f]
+  lmkit run    <project/run | project> [--manifest PATH]
+  lmkit start  <project/run> [--manifest PATH]
+  lmkit stop   <project/run> [--manifest PATH]
 
 status reads each worker's systemd unit state and metrics.jsonl tail over ssh
 and prints a table (or JSON with --json).
 
 logs streams a worker's systemd journal over ssh (journalctl --user); -f follows.
+
+run/start/stop are ACID: each takes a per-worker lock, verifies the end state
+over ssh, and rolls back on any failure. run deploys (or updates) the
+persistent unit and starts it; a bare project runs every worker in the manifest.
 `
 
 func main() {
@@ -46,6 +53,16 @@ func main() {
 	case "logs":
 		if err := runLogs(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "lmkit logs:", err)
+			os.Exit(1)
+		}
+	case "run":
+		if err := runRun(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "lmkit run:", err)
+			os.Exit(1)
+		}
+	case "start", "stop":
+		if err := runStartStop(os.Args[1], os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "lmkit "+os.Args[1]+":", err)
 			os.Exit(1)
 		}
 	default:
