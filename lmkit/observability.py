@@ -11,11 +11,14 @@ import sys
 from typing import Optional
 
 
-def make_run(experiment: str, hparams: Optional[dict] = None):
+def make_run(experiment: str, hparams: Optional[dict] = None,
+             name: Optional[str] = None, description: Optional[str] = None):
     """Return an Aim ``Run`` logging to ``$AIM_REPO``, or ``None`` if unset or
     unavailable.
 
-    The caller logs with ``run.track(value, name=..., step=...)`` and calls
+    ``experiment`` groups runs; ``name`` is the human label shown in the runs list
+    (default is the run hash, which is unhelpful), and ``description`` is a one-line
+    summary. The caller logs with ``run.track(value, name=..., step=...)`` and calls
     ``run.close()`` at the end; guard every use with ``if run:``.
     """
     repo = os.environ.get("AIM_REPO")
@@ -27,6 +30,10 @@ def make_run(experiment: str, hparams: Optional[dict] = None):
         return None
     try:
         run = aim.Run(repo=repo, experiment=experiment)
+        if name:
+            run.name = name
+        if description:
+            run.description = description
         if hparams:
             run["hparams"] = dict(hparams)
         return run

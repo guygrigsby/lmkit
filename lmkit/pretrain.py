@@ -33,7 +33,8 @@ def _request_stop(signum, frame):
     _STOP = True
 
 
-def run(model, tcfg, mcfg, *, experiment: str = "pretrain") -> int:
+def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
+        run_name: str = None, run_description: str = None) -> int:
     out_dir = Path(tcfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = out_dir / "metrics.jsonl"
@@ -70,7 +71,8 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain") -> int:
     emit(metrics_path, {"event": "start", "step": step, "params": n_params,
                         "max_steps": tcfg.max_steps})
     run_ = make_run(experiment, hparams={"params": n_params, **tcfg.to_dict(),
-                                         **mcfg.to_dict()})
+                                         **mcfg.to_dict()},
+                    name=run_name, description=run_description)
 
     train_loader = iter(torch.utils.data.DataLoader(
         TokenDataset(tcfg.data_dir, mcfg.block_size, "train"), batch_size=tcfg.batch_size))
