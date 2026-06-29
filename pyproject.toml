@@ -11,7 +11,7 @@ dependencies = ["torch", "tokenizers", "numpy"]
 
 [project.optional-dependencies]
 hub = ["huggingface_hub"]      # push.py
-track = ["aim"]               # observability.py
+track = ["aim", "mlflow"]      # observability.py (either/both, both optional)
 dev = ["pytest"]
 
 [project.scripts]
