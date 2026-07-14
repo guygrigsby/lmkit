@@ -18,7 +18,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from .observability import make_run
+from .observability import canonical_hparams, make_run
 from .sft_data import SFTDataset, build_sft_windows
 from .training import (
     achieved_tflops, autocast_ctx, build_optimizer, emit, get_lr, log_metrics,
@@ -95,7 +95,9 @@ def run(model, cfg, mcfg, *, experiment: str = "sft") -> int:
           f"{steps_per_epoch:,} steps/epoch x {cfg.epochs} = {cfg.max_steps:,} steps on {device.type}")
     emit(metrics_path, {"event": "start", "step": 0, "max_steps": cfg.max_steps,
                         "train_windows": len(train_ds), "init_from": getattr(cfg, "init_from", "")})
-    run_ = make_run(experiment, hparams={"params": n_params, **cfg.to_dict(), **mcfg.to_dict()})
+    run_ = make_run(experiment,
+                    hparams=canonical_hparams("lmkit", n_params, cfg, mcfg),
+                    name=f"lmkit-{Path(cfg.out_dir).name}")
 
     DataLoader = torch.utils.data.DataLoader
     train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
@@ -115,7 +117,7 @@ def run(model, cfg, mcfg, *, experiment: str = "sft") -> int:
             save_ckpt(latest_path, model, optimizer, step, best_val, mcfg, cfg.compile)
             emit(metrics_path, {"event": "sigterm", "step": step})
             if run_:
-                run_.close()
+                run_.close("KILLED")
             return 0
 
         lr = get_lr(step, cfg)
@@ -170,7 +172,7 @@ def run(model, cfg, mcfg, *, experiment: str = "sft") -> int:
             emit(metrics_path, {"event": "nan", "step": step})
             print(f"NON-FINITE LOSS at step {step}", file=sys.stderr)
             if run_:
-                run_.close()
+                run_.close("FAILED")
             return 2
 
         gnorm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip))

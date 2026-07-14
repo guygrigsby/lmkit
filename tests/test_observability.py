@@ -32,6 +32,7 @@ class _FakeAim:
 class _FakeMlflowClient:
     def __init__(self):
         self.metrics, self.params, self.terminated = [], {}, None
+        self.status = None
 
     def log_metric(self, run_id, key, value, step=0):
         self.metrics.append((run_id, key, value, step))
@@ -39,8 +40,9 @@ class _FakeMlflowClient:
     def log_param(self, run_id, key, value):
         self.params[key] = value
 
-    def set_terminated(self, run_id):
+    def set_terminated(self, run_id, status="FINISHED"):
         self.terminated = run_id
+        self.status = status
 
 
 def test_run_fans_out_to_both_backends():
@@ -57,7 +59,23 @@ def test_run_fans_out_to_both_backends():
     assert ("rid", "loss", 0.5, 3) in mlf.metrics
     assert mlf.params == {"lr": "0.01", "layers": "4"}
     assert aim.closed and mlf.terminated == "rid"
+    assert mlf.status == "FINISHED"  # default terminal status
     assert not run  # both cleared after close
+
+
+def test_close_passes_terminal_status():
+    mlf = _FakeMlflowClient()
+    run = _Run()
+    run._mlflow = (mlf, "rid")
+    run.close("KILLED")
+    assert mlf.status == "KILLED"
+
+
+def test_canonical_hparams_renames_and_tags():
+    hp = observability.canonical_hparams(
+        "lmkit", 7, {"n_layer": 12, "n_head": 12, "batch_size": 2})
+    assert hp == {"framework": "lmkit", "params": 7,
+                  "n_layers": 12, "n_heads": 12, "batch_size": 2}
 
 
 def test_empty_run_is_falsy_and_inert():

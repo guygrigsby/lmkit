@@ -25,6 +25,38 @@ def _warn(msg: str) -> None:
     print(f"[lmkit.observability] {msg}", file=sys.stderr)
 
 
+# Fleet-canonical hparam names. Every framework (lmkit, lmkit-go, lmtk) logs the
+# same concept under the same key so params line up across frameworks in the
+# tracker. Maps each framework's local spelling to the canonical one; keys not
+# listed are already canonical.
+_CANONICAL_KEYS = {
+    "n_layer": "n_layers",
+    "n_head": "n_heads",
+    "layers": "n_layers",
+    "heads": "n_heads",
+    "kv_heads": "n_kv_heads",
+    "vocab": "vocab_size",
+    "hidden": "hidden_size",
+    "inter": "intermediate_size",
+    "ffn_hidden": "intermediate_size",
+    "block": "block_size",
+    "seq_len": "block_size",
+    "batch": "batch_size",
+    "warmup": "warmup_steps",
+}
+
+
+def canonical_hparams(framework: str, n_params: int, *cfgs) -> dict:
+    """Merge config dicts into one hparam dict under the fleet-canonical key
+    names, tagged with the emitting framework."""
+    out = {"framework": framework, "params": n_params}
+    for cfg in cfgs:
+        d = cfg.to_dict() if hasattr(cfg, "to_dict") else dict(cfg)
+        for k, v in d.items():
+            out[_CANONICAL_KEYS.get(k, k)] = v
+    return out
+
+
 def _short(v) -> str:
     """Coerce a param value to a short string (MLflow rejects long params)."""
     s = str(v)
@@ -72,7 +104,11 @@ class _Run:
             except Exception as e:
                 _warn(f"MLflow param failed: {e}")
 
-    def close(self) -> None:
+    def close(self, status: str = "FINISHED") -> None:
+        """End the run. ``status`` is an MLflow terminal status — FINISHED for a
+        completed run, FAILED for divergence (non-finite loss), KILLED for a
+        SIGTERM stop — so the tracker distinguishes how runs ended. Aim has no
+        status concept; it just closes."""
         if self._aim is not None:
             try:
                 self._aim.close()
@@ -82,7 +118,7 @@ class _Run:
         if self._mlflow is not None:
             client, run_id = self._mlflow
             try:
-                client.set_terminated(run_id)
+                client.set_terminated(run_id, status=status)
             except Exception:
                 pass
             self._mlflow = None

@@ -19,7 +19,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from .observability import make_run
+from .observability import canonical_hparams, make_run
 from .training import (
     TokenDataset, achieved_tflops, autocast_ctx, build_optimizer, emit, get_lr,
     log_metrics, peak_vram_gb, prune_snapshots, resolve_dtype, save_ckpt,
@@ -70,9 +70,12 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
           f"target {tcfg.max_steps} steps on {device.type}")
     emit(metrics_path, {"event": "start", "step": step, "params": n_params,
                         "max_steps": tcfg.max_steps})
-    run_ = make_run(experiment, hparams={"params": n_params, **tcfg.to_dict(),
-                                         **mcfg.to_dict()},
-                    name=run_name, description=run_description)
+    # Fleet conventions: run names are {framework}-{job} (job defaults to the
+    # out dir's basename), hparams use the canonical cross-framework keys.
+    run_ = make_run(experiment,
+                    hparams=canonical_hparams("lmkit", n_params, tcfg, mcfg),
+                    name=run_name or f"lmkit-{out_dir.name}",
+                    description=run_description)
 
     train_loader = iter(torch.utils.data.DataLoader(
         TokenDataset(tcfg.data_dir, mcfg.block_size, "train"), batch_size=tcfg.batch_size))
@@ -86,7 +89,7 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
             save_ckpt(latest_path, model, optimizer, step, best_val, mcfg, tcfg.compile)
             emit(metrics_path, {"event": "sigterm", "step": step})
             if run_:
-                run_.close()
+                run_.close("KILLED")
             return 0
 
         lr = get_lr(step, tcfg)
@@ -146,7 +149,7 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
             emit(metrics_path, {"event": "nan", "step": step, "loss": loss_accum})
             print(f"NON-FINITE LOSS at step {step}", file=sys.stderr)
             if run_:
-                run_.close()
+                run_.close("FAILED")
             return 2
 
         gnorm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), tcfg.grad_clip))
