@@ -1,5 +1,7 @@
 """Tracking is optional and backend-agnostic: no env -> no run; the run handle
 fans metrics/params out to whatever backends are live and never raises."""
+import sys
+
 from lmkit import observability
 from lmkit.observability import _Run, make_run
 
@@ -83,3 +85,65 @@ def test_empty_run_is_falsy_and_inert():
     assert not run
     run.track(1.0, name="x", step=0)  # must not raise with no backends
     run.close()
+
+
+def test_run_id_sidecar_roundtrip(tmp_path):
+    assert observability.stored_run_id(tmp_path) is None
+    observability.store_run_id(tmp_path, "abc123")
+    assert observability.stored_run_id(tmp_path) == "abc123"
+    observability.store_run_id(tmp_path, None)  # no id -> no write, no raise
+    assert observability.stored_run_id(tmp_path) == "abc123"
+
+
+class _ReattachClient:
+    """MlflowClient fake for the resume path: knows one existing run."""
+    existing = "run-live"
+
+    def __init__(self):
+        _ReattachClient.last = self
+        self.updated, self.created = None, False
+
+    def get_run(self, run_id):
+        if run_id != self.existing:
+            raise KeyError(run_id)
+
+    def update_run(self, run_id, status=None):
+        self.updated = (run_id, status)
+
+    def get_experiment_by_name(self, name):
+        return type("E", (), {"experiment_id": "1"})()
+
+    def create_run(self, exp_id, tags=None):
+        self.created = True
+        return type("R", (), {"info": type("I", (), {"run_id": "run-new"})()})()
+
+    def log_param(self, run_id, k, v):
+        pass
+
+
+def _fake_mlflow(monkeypatch):
+    import types
+    tracking = types.ModuleType("mlflow.tracking")
+    tracking.MlflowClient = _ReattachClient
+    mlflow = types.ModuleType("mlflow")
+    mlflow.tracking = tracking
+    monkeypatch.setitem(sys.modules, "mlflow", mlflow)
+    monkeypatch.setitem(sys.modules, "mlflow.tracking", tracking)
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://fake")
+
+
+def test_make_mlflow_reattaches_to_live_run(monkeypatch):
+    _fake_mlflow(monkeypatch)
+    got = observability._make_mlflow("exp", None, None, None, "run-live")
+    client, run_id = got
+    assert run_id == "run-live"
+    assert client.updated == ("run-live", "RUNNING")
+    assert not client.created  # reattach must not open a second run
+
+
+def test_make_mlflow_falls_back_when_run_is_gone(monkeypatch):
+    _fake_mlflow(monkeypatch)
+    got = observability._make_mlflow("exp", None, None, None, "run-gone")
+    _, run_id = got
+    assert run_id == "run-new"
+    assert _ReattachClient.last.created

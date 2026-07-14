@@ -19,7 +19,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from .observability import canonical_hparams, make_run
+from .observability import canonical_hparams, make_run, store_run_id, stored_run_id
 from .training import (
     TokenDataset, achieved_tflops, autocast_ctx, build_optimizer, emit, get_lr,
     log_metrics, peak_vram_gb, prune_snapshots, resolve_dtype, save_ckpt,
@@ -71,11 +71,16 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
     emit(metrics_path, {"event": "start", "step": step, "params": n_params,
                         "max_steps": tcfg.max_steps})
     # Fleet conventions: run names are {framework}-{job} (job defaults to the
-    # out dir's basename), hparams use the canonical cross-framework keys.
+    # out dir's basename), hparams use the canonical cross-framework keys, and
+    # a resume reattaches to the run id persisted beside the checkpoints so
+    # one training stays one run across restarts.
     run_ = make_run(experiment,
                     hparams=canonical_hparams("lmkit", n_params, tcfg, mcfg),
                     name=run_name or f"lmkit-{out_dir.name}",
-                    description=run_description)
+                    description=run_description,
+                    resume_run_id=stored_run_id(out_dir) if step > 0 else None)
+    if run_:
+        store_run_id(out_dir, run_.mlflow_run_id)
 
     train_loader = iter(torch.utils.data.DataLoader(
         TokenDataset(tcfg.data_dir, mcfg.block_size, "train"), batch_size=tcfg.batch_size))

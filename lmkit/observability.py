@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 from typing import Optional
 
 
@@ -76,6 +77,11 @@ class _Run:
     def __bool__(self) -> bool:
         return self._aim is not None or self._mlflow is not None
 
+    @property
+    def mlflow_run_id(self) -> Optional[str]:
+        """The MLflow run id, for persisting so a resume can reattach."""
+        return self._mlflow[1] if self._mlflow else None
+
     def track(self, value, name: str, step: Optional[int] = None) -> None:
         if self._aim is not None:
             try:
@@ -124,19 +130,46 @@ class _Run:
             self._mlflow = None
 
 
+def stored_run_id(out_dir) -> Optional[str]:
+    """The MLflow run id persisted beside the checkpoints (``mlflow_run_id``),
+    so a resumed training reattaches to its original run instead of
+    fragmenting the curve across one run per restart."""
+    try:
+        return (Path(out_dir) / "mlflow_run_id").read_text().strip() or None
+    except OSError:
+        return None
+
+
+def store_run_id(out_dir, run_id) -> None:
+    """Persist the MLflow run id beside the checkpoints for the next resume.
+    Tracking bookkeeping must not kill training, so failures are ignored."""
+    if not run_id:
+        return
+    try:
+        (Path(out_dir) / "mlflow_run_id").write_text(run_id + "\n")
+    except OSError:
+        pass
+
+
 def make_run(experiment: str, hparams: Optional[dict] = None,
-             name: Optional[str] = None, description: Optional[str] = None):
+             name: Optional[str] = None, description: Optional[str] = None,
+             resume_run_id: Optional[str] = None):
     """Start a tracking run on every configured backend (Aim, MLflow). Returns a
     run handle, or ``None`` if no backend is configured/reachable.
 
     ``experiment`` groups runs; ``name`` is the human label shown in the runs
     list; ``description`` is a one-line summary; ``hparams`` are recorded as
-    params. The caller logs with ``run.track(value, name=..., step=...)`` and
-    calls ``run.close()``; guard every use with ``if run:``.
+    params. ``resume_run_id`` reattaches to an existing MLflow run (a resumed
+    training keeps one run instead of fragmenting across restarts); if the run
+    is gone from the server, a fresh one is created. The caller logs with
+    ``run.track(value, name=..., step=...)`` and calls ``run.close()``; guard
+    every use with ``if run:``. Read ``run.mlflow_run_id`` after creation to
+    persist the id for the next resume.
     """
     run = _Run()
     run._aim = _make_aim(experiment, hparams, name, description)
-    run._mlflow = _make_mlflow(experiment, hparams, name, description)
+    run._mlflow = _make_mlflow(experiment, hparams, name, description,
+                               resume_run_id)
     return run if run else None
 
 
@@ -165,7 +198,7 @@ def _make_aim(experiment, hparams, name, description):
         return None
 
 
-def _make_mlflow(experiment, hparams, name, description):
+def _make_mlflow(experiment, hparams, name, description, resume_run_id=None):
     if not os.environ.get("MLFLOW_TRACKING_URI"):
         return None
     try:
@@ -178,6 +211,17 @@ def _make_mlflow(experiment, hparams, name, description):
         return None
     try:
         client = MlflowClient()  # reads MLFLOW_TRACKING_URI from the environment
+        if resume_run_id:
+            # Reattach: flip the run back to RUNNING and keep logging into it.
+            # Params are already on the run, so skip them (a resume may extend
+            # max_steps, and re-logging a changed param is an MLflow error).
+            try:
+                client.get_run(resume_run_id)
+                client.update_run(resume_run_id, status="RUNNING")
+                return (client, resume_run_id)
+            except Exception:
+                _warn(f"MLflow run {resume_run_id} not reattachable; "
+                      "starting a fresh run")
         exp = client.get_experiment_by_name(experiment)
         exp_id = exp.experiment_id if exp else client.create_experiment(experiment)
         # Set name/description via tags so this works across MLflow versions
