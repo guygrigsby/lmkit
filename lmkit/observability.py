@@ -111,6 +111,9 @@ def _make_aim(experiment, hparams, name, description):
     try:
         import aim
     except Exception:
+        # AIM_REPO says the caller expects tracking; a missing client must be
+        # loud or runs silently vanish from the tracker.
+        _warn("Aim tracking disabled: AIM_REPO is set but 'aim' is not installed")
         return None
     try:
         run = aim.Run(repo=repo, experiment=experiment)
@@ -132,6 +135,10 @@ def _make_mlflow(experiment, hparams, name, description):
     try:
         from mlflow.tracking import MlflowClient
     except Exception:
+        # MLFLOW_TRACKING_URI says the caller expects tracking; a missing
+        # client must be loud or runs silently vanish from the tracker.
+        _warn("MLflow tracking disabled: MLFLOW_TRACKING_URI is set but "
+              "'mlflow' is not installed (pip install mlflow-skinny)")
         return None
     try:
         client = MlflowClient()  # reads MLFLOW_TRACKING_URI from the environment
