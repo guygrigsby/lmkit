@@ -5,6 +5,12 @@ on token shards in `tcfg.data_dir`. The caller builds and places the model
 (device + dtype); the loop owns the optimizer, resume, checkpointing, metrics,
 and optional Aim tracking. Device-agnostic: runs on CPU or CUDA/ROCm.
 
+Data parallel: launch under `torchrun --nproc-per-node N train.py ...` (the
+caller invokes `lmkit.distributed.init()` before building the model). `tcfg.grad_accum`
+stays the GLOBAL accumulation count and is split across ranks, so tokens per step
+and the loss curve match a single-process run. Rank 0 owns evaluation output,
+checkpoints, metrics and tracking.
+
 Returns 0 on completion or clean SIGTERM, 2 on non-finite loss (resume from
 `latest.pt`).
 """
@@ -19,13 +25,19 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
+from . import distributed
 from .observability import canonical_hparams, make_run, store_run_id, stored_run_id
 from .training import (
-    TokenDataset, achieved_tflops, autocast_ctx, build_optimizer, emit, get_lr,
-    log_metrics, peak_vram_gb, prune_snapshots, resolve_dtype, save_ckpt,
+    TokenDataset, achieved_tflops, autocast_ctx, build_optimizer, get_lr,
+    peak_vram_gb, prune_snapshots, resolve_dtype, save_ckpt,
 )
+from .training import emit as _emit, log_metrics as _log_metrics
 
 _STOP = False
+
+
+def _nop(*args, **kwargs) -> None:
+    pass
 
 
 def _request_stop(signum, frame):
@@ -35,6 +47,13 @@ def _request_stop(signum, frame):
 
 def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
         run_name: str = None, run_description: str = None) -> int:
+    d = distributed.init()
+    main = d.is_main
+    if tcfg.grad_accum % d.world:
+        raise ValueError(f"grad_accum {tcfg.grad_accum} not divisible by {d.world} ranks")
+    local_accum = tcfg.grad_accum // d.world
+    emit = _emit if main else _nop
+    log_metrics = _log_metrics if main else _nop
     out_dir = Path(tcfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = out_dir / "metrics.jsonl"
@@ -47,7 +66,7 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
     except ValueError:
         pass  # not in the main thread; skip handlers
 
-    torch.manual_seed(tcfg.seed)
+    torch.manual_seed(tcfg.seed + d.rank)
     device = next(model.parameters()).device
     dtype = resolve_dtype(tcfg)
     optimizer = build_optimizer(model, tcfg)
@@ -61,6 +80,7 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
         step = int(ckpt.get("step", 0))
         best_val = float(ckpt.get("best_val", float("inf")))
         emit(metrics_path, {"event": "resume", "step": step})
+    d.broadcast_params(model)
 
     if tcfg.compile:
         model = torch.compile(model)
@@ -78,7 +98,7 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
                     hparams=canonical_hparams("lmkit", n_params, tcfg, mcfg),
                     name=run_name or f"lmkit-{out_dir.name}",
                     description=run_description,
-                    resume_run_id=stored_run_id(out_dir) if step > 0 else None)
+                    resume_run_id=stored_run_id(out_dir) if step > 0 else None) if main else None
     if run_:
         store_run_id(out_dir, run_.mlflow_run_id)
 
@@ -90,11 +110,13 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
     t0 = time.time()
     last_train_loss = 0.0
     while step < tcfg.max_steps:
-        if _STOP:
-            save_ckpt(latest_path, model, optimizer, step, best_val, mcfg, tcfg.compile)
+        if d.any(_STOP, device):  # any rank signalled: all stop at the same step
+            if main:
+                save_ckpt(latest_path, model, optimizer, step, best_val, mcfg, tcfg.compile)
             emit(metrics_path, {"event": "sigterm", "step": step})
             if run_:
                 run_.close("KILLED")
+            d.barrier()
             return 0
 
         lr = get_lr(step, tcfg)
@@ -104,29 +126,32 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
         if step % tcfg.eval_interval == 0:
             model.eval()
             vl = 0.0
+            eval_iters = max(1, tcfg.eval_iters // d.world)  # each rank evals its share
             with torch.no_grad():
-                for _ in range(tcfg.eval_iters):
+                for _ in range(eval_iters):
                     x, y = next(val_loader)
                     x, y = x.to(device), y.to(device)
                     with autocast_ctx(device, dtype):
                         vl += F.cross_entropy(
                             model(x).reshape(-1, mcfg.vocab_size), y.reshape(-1)).item()
-            vl /= tcfg.eval_iters
+            vl = d.mean([vl / eval_iters], device)[0]
             improved = vl < best_val
             if improved:
                 best_val = vl
-                save_ckpt(best_path, model, optimizer, step, best_val, mcfg, tcfg.compile)
-            print(f"step {step:6d} | val {vl:.4f}{' (best)' if improved else ''} | lr {lr:.2e}")
+                if main:
+                    save_ckpt(best_path, model, optimizer, step, best_val, mcfg, tcfg.compile)
+            if main:
+                print(f"step {step:6d} | val {vl:.4f}{' (best)' if improved else ''} | lr {lr:.2e}")
             log_metrics(run_, metrics_path, "eval", step, {
                 "val_loss": vl, "val_perplexity": math.exp(min(vl, 20)),
                 "best_val": best_val, "train_loss": last_train_loss,
                 "lr": lr, "improved": improved})
             model.train()
 
-        if step > 0 and step % tcfg.save_interval == 0:
+        if main and step > 0 and step % tcfg.save_interval == 0:
             save_ckpt(latest_path, model, optimizer, step, best_val, mcfg, tcfg.compile)
 
-        if step > 0 and getattr(tcfg, "snapshot_interval", 0) and step % tcfg.snapshot_interval == 0:
+        if main and step > 0 and getattr(tcfg, "snapshot_interval", 0) and step % tcfg.snapshot_interval == 0:
             snap = out_dir / f"step_{step:06d}"
             snap.mkdir(parents=True, exist_ok=True)
             save_ckpt(snap / "model.pt", model, optimizer, step, best_val, mcfg, tcfg.compile)
@@ -137,7 +162,7 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
         loss_accum = 0.0
         aux_accum = 0.0
         has_aux = hasattr(model, "aux_loss")
-        for _ in range(tcfg.grad_accum):
+        for _ in range(local_accum):
             x, y = next(train_loader)
             x, y = x.to(device), y.to(device)
             with autocast_ctx(device, dtype):
@@ -146,10 +171,11 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
                     aux = model.aux_loss()
                     aux_accum += float(aux)
                     loss = loss + aux
-                loss = loss / tcfg.grad_accum
+                loss = loss / local_accum
             loss.backward()
             loss_accum += loss.item()
 
+        loss_accum, aux_accum = d.mean([loss_accum, aux_accum], device)
         if not math.isfinite(loss_accum):
             emit(metrics_path, {"event": "nan", "step": step, "loss": loss_accum})
             print(f"NON-FINITE LOSS at step {step}", file=sys.stderr)
@@ -157,6 +183,7 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
                 run_.close("FAILED")
             return 2
 
+        d.sync_grads(model.parameters())
         gnorm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), tcfg.grad_clip))
         optimizer.step()
         last_train_loss = loss_accum
@@ -165,8 +192,9 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
             dt = time.time() - t0
             tok_s = (tcfg.batch_size * tcfg.grad_accum * mcfg.block_size
                      * max(tcfg.log_interval, 1) / max(dt, 1e-9))
-            print(f"step {step:6d} | loss {loss_accum:.4f} | {tok_s/1e3:.1f}k tok/s | "
-                  f"gnorm {gnorm:.2f} | lr {lr:.2e}")
+            if main:
+                print(f"step {step:6d} | loss {loss_accum:.4f} | {tok_s/1e3:.1f}k tok/s | "
+                      f"gnorm {gnorm:.2f} | lr {lr:.2e}")
             m = {
                 "train_loss": loss_accum, "lr": lr, "grad_norm": gnorm,
                 "tok_per_sec": tok_s, "step_time_ms": 1000 * dt / max(tcfg.log_interval, 1),
@@ -175,17 +203,19 @@ def run(model, tcfg, mcfg, *, experiment: str = "pretrain",
                 "peak_vram_gb": peak_vram_gb(device),
             }
             if has_aux:
-                m["aux_loss"] = aux_accum / max(tcfg.grad_accum, 1)
+                m["aux_loss"] = aux_accum / max(local_accum, 1)
             log_metrics(run_, metrics_path, "train", step, m)
             t0 = time.time()
         step += 1
 
-    final = out_dir / "final"
-    final.mkdir(parents=True, exist_ok=True)
-    save_ckpt(final / "model.pt", model, optimizer, step, best_val, mcfg, tcfg.compile)
-    save_ckpt(latest_path, model, optimizer, step, best_val, mcfg, tcfg.compile)
+    if main:
+        final = out_dir / "final"
+        final.mkdir(parents=True, exist_ok=True)
+        save_ckpt(final / "model.pt", model, optimizer, step, best_val, mcfg, tcfg.compile)
+        save_ckpt(latest_path, model, optimizer, step, best_val, mcfg, tcfg.compile)
+        print(f"done. {step} steps, best_val {best_val:.4f}")
     emit(metrics_path, {"event": "done", "step": step, "best_val": best_val})
     if run_:
         run_.close()
-    print(f"done. {step} steps, best_val {best_val:.4f}")
+    d.barrier()
     return 0
