@@ -3,7 +3,7 @@ BIN       := lmkit
 CMD       := ./cmd/lmkit
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 
-.PHONY: build test vet fmt install-cli dist clean
+.PHONY: build test vet fmt install-cli dist clean image
 
 # Output to bin/ — `go build ./cmd/lmkit` would write ./lmkit, colliding with
 # the Python lmkit/ package dir in the repo root.
@@ -38,3 +38,11 @@ dist:
 
 clean:
 	rm -rf dist
+
+# image builds the CUDA job image for linux/amd64 (the cloud GPU hosts). CI calls this
+# same target. PUSH=1 pushes to the registry instead of loading into the local docker.
+IMAGE ?= ghcr.io/guygrigsby/lmkit-cuda
+TAG   ?= $(shell git rev-parse --short HEAD)
+image:
+	docker buildx build --platform linux/amd64 -f docker/cuda.Dockerfile \
+	  -t $(IMAGE):$(TAG) -t $(IMAGE):latest $(if $(PUSH),--push,--load) .

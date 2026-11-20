@@ -1,0 +1,11 @@
+.git
+.github
+.beads
+bin
+dist
+cmd
+internal
+docs
+tests
+**/__pycache__
+*.pt
