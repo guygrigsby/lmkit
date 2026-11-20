@@ -22,18 +22,24 @@ plus `job.log` (combined stdout and stderr) and `status.txt` (outcome and elapse
 Upload happens after success, failure and timeout alike, with four attempts and exponential
 backoff.
 
-Exit code: the job's own; 124 on timeout; 70 when the upload failed (outputs are then lost
-with the pod); 2 when required configuration is missing.
+Exit code: the job's own; 124 on timeout; 70 when the upload failed; 2 when required
+configuration is missing.
 
 ## Lifecycle
 
-1. Pod starts from the image; the entrypoint checks configuration and that the output repo
-   is private.
+1. Pod starts from the image. The entrypoint checks configuration and that the output repo is
+   private, then looks for `<LMKIT_JOB_NAME>/status.txt` in the repo. If it exists the job
+   already finished: nothing runs, and the entrypoint goes straight to step 4.
 2. The command runs. SIGTERM to the container (pod stop) terminates the command and still
    uploads.
-3. The entrypoint exits, which stops the pod. The entrypoint holds no cloud-account
-   credentials, so it cannot delete the pod; a stopped pod bills for disk only and is removed
-   by whoever launched it or a later sweep.
+3. Outputs are uploaded (four attempts, exponential backoff).
+4. On a pod (`RUNPOD_POD_ID` set), the entrypoint deletes the pod through the platform API
+   with the `RUNPOD_API_KEY` the platform injects. Exiting is not enough: the platform
+   restarts an exited container, which would rerun the job, so a finished container that
+   cannot delete its pod holds (sleeps) instead of exiting.
+
+The marker makes restarts and repeat launches of a finished job harmless. It also means a
+failed job is not retried automatically: relaunch it under a new name.
 
 ## Image
 
@@ -48,8 +54,10 @@ with the pod); 2 when required configuration is missing.
 |---|---|
 | Command fails | exit code recorded, log and partial outputs uploaded |
 | Command hangs | killed at `LMKIT_MAX_SECONDS`, exit 124, outputs uploaded |
-| Pod preempted or stopped | SIGTERM path uploads what exists |
-| Hub unreachable at the end | retried; then exit 70 and outputs are lost |
+| Pod preempted or stopped | SIGTERM path uploads what exists; a restarted container sees the marker (if the job finished) or reruns it |
+| Hub unreachable at the end | retried; then the pod is held, not deleted, so the outputs are not lost; exit 70 is only reached off the platform |
+| Pod deletion fails | the container holds; a later sweep or the launcher removes the pod |
+| Container restarted after finishing | marker found, job skipped, pod deleted |
 | Output repo is public | job refused before running |
 
 ## Not covered

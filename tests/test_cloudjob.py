@@ -11,9 +11,12 @@ from lmkit import cloudjob
 
 
 class FakeApi:
-    def __init__(self, private=True, fail_uploads=0):
+    def __init__(self, private=True, fail_uploads=0, done=()):
         self.private, self.fail_uploads = private, fail_uploads
-        self.uploads, self.created = [], []
+        self.uploads, self.created, self.done = [], [], set(done)
+
+    def file_exists(self, repo_id, filename, **kw):
+        return filename in self.done
 
     def create_repo(self, repo_id, **kw):
         self.created.append((repo_id, kw))
@@ -95,3 +98,70 @@ def test_main_reports_missing_configuration_instead_of_running(monkeypatch, caps
         monkeypatch.delenv(k, raising=False)
     assert cloudjob.main() == 2
     assert "LMKIT_JOB_CMD" in capsys.readouterr().err
+
+
+# --- restart safety and pod self-termination ---------------------------------------
+
+def test_a_job_that_already_finished_is_not_run_again(tmp_path):
+    """The platform restarts an exited container; the marker in the repo makes that a no-op."""
+    api = FakeApi(done={"job1/status.txt"})
+    rc, api = run(tmp_path, f"touch {tmp_path}/ran", api=api)
+    assert rc == 0 and not (tmp_path / "ran").exists() and api.uploads == []
+
+
+def test_main_terminates_the_pod_after_a_successful_upload(tmp_path, monkeypatch):
+    api, calls = FakeApi(), []
+    monkeypatch.setattr(cloudjob, "_hub", lambda: api)
+    monkeypatch.setattr(cloudjob, "_terminate_pod", lambda: calls.append("terminated") or True)
+    monkeypatch.setenv("LMKIT_JOB_NAME", "j"); monkeypatch.setenv("LMKIT_JOB_CMD", "true")
+    monkeypatch.setenv("LMKIT_OUT_REPO", "me/runs"); monkeypatch.setenv("LMKIT_OUT_DIR", str(tmp_path / "o"))
+    monkeypatch.setenv("RUNPOD_POD_ID", "pod123")
+    assert cloudjob.main() == 0
+    assert calls == ["terminated"] and len(api.uploads) == 1
+
+
+def test_a_failed_job_is_still_terminated_once_its_outputs_are_safe(tmp_path, monkeypatch):
+    monkeypatch.setattr(cloudjob, "_hub", lambda: FakeApi())
+    calls = []
+    monkeypatch.setattr(cloudjob, "_terminate_pod", lambda: calls.append(1) or True)
+    monkeypatch.setenv("LMKIT_JOB_NAME", "j"); monkeypatch.setenv("LMKIT_JOB_CMD", "exit 4")
+    monkeypatch.setenv("LMKIT_OUT_REPO", "me/runs"); monkeypatch.setenv("LMKIT_OUT_DIR", str(tmp_path / "o"))
+    monkeypatch.setenv("RUNPOD_POD_ID", "pod123")
+    assert cloudjob.main() == 4 and calls == [1]
+
+
+def test_pod_is_kept_when_the_outputs_did_not_upload(tmp_path, monkeypatch):
+    """Terminating would destroy the only copy of the results: hold instead."""
+    monkeypatch.setattr(cloudjob, "_hub", lambda: FakeApi(fail_uploads=99))
+    monkeypatch.setattr(cloudjob.time, "sleep", lambda s: None)
+    held, calls = [], []
+    monkeypatch.setattr(cloudjob, "_hold", lambda why: held.append(why))
+    monkeypatch.setattr(cloudjob, "_terminate_pod", lambda: calls.append(1) or True)
+    monkeypatch.setenv("LMKIT_JOB_NAME", "j"); monkeypatch.setenv("LMKIT_JOB_CMD", "true")
+    monkeypatch.setenv("LMKIT_OUT_REPO", "me/runs"); monkeypatch.setenv("LMKIT_OUT_DIR", str(tmp_path / "o"))
+    monkeypatch.setenv("RUNPOD_POD_ID", "pod123")
+    assert cloudjob.main() == cloudjob.UPLOAD_FAILED
+    assert calls == [] and len(held) == 1
+
+
+def test_pod_is_held_not_exited_when_termination_fails(tmp_path, monkeypatch):
+    """Exiting would make the platform restart the container."""
+    monkeypatch.setattr(cloudjob, "_hub", lambda: FakeApi())
+    held = []
+    monkeypatch.setattr(cloudjob, "_hold", lambda why: held.append(why))
+    monkeypatch.setattr(cloudjob, "_terminate_pod", lambda: False)
+    monkeypatch.setenv("LMKIT_JOB_NAME", "j"); monkeypatch.setenv("LMKIT_JOB_CMD", "true")
+    monkeypatch.setenv("LMKIT_OUT_REPO", "me/runs"); monkeypatch.setenv("LMKIT_OUT_DIR", str(tmp_path / "o"))
+    monkeypatch.setenv("RUNPOD_POD_ID", "pod123")
+    assert cloudjob.main() == 0 and len(held) == 1
+
+
+def test_no_termination_off_the_platform(tmp_path, monkeypatch):
+    """Without a pod id (local run, CI) the entrypoint just returns the job's code."""
+    monkeypatch.setattr(cloudjob, "_hub", lambda: FakeApi())
+    monkeypatch.delenv("RUNPOD_POD_ID", raising=False)
+    monkeypatch.setattr(cloudjob, "_terminate_pod", lambda: pytest.fail("must not terminate"))
+    monkeypatch.setattr(cloudjob, "_hold", lambda why: pytest.fail("must not hold"))
+    monkeypatch.setenv("LMKIT_JOB_NAME", "j"); monkeypatch.setenv("LMKIT_JOB_CMD", "true")
+    monkeypatch.setenv("LMKIT_OUT_REPO", "me/runs"); monkeypatch.setenv("LMKIT_OUT_DIR", str(tmp_path / "o"))
+    assert cloudjob.main() == 0

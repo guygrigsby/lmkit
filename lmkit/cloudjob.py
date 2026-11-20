@@ -14,6 +14,14 @@ the job's code, which stops the pod, so it needs no credentials to delete itself
     HF_TOKEN         hub write token
 
 Exit code: the job's, 124 on timeout, 70 when outputs could not be uploaded.
+
+On a RunPod pod (RUNPOD_POD_ID set) the pod is deleted once the outputs are safely in the
+repo: the platform restarts an exited container, so exiting alone would rerun the job.
+The platform injects RUNPOD_POD_ID and RUNPOD_API_KEY into the container. If the upload
+or the deletion fails the process holds the pod instead of exiting, because exiting would
+destroy the only copy of the results or restart the job. A job whose `status.txt` is
+already in the repo is not run again, so a restart (or a launch of a finished job) is a
+no-op that goes straight to termination.
 """
 from __future__ import annotations
 
@@ -23,6 +31,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 from lmkit.push import ensure_repo
@@ -97,9 +106,13 @@ def _upload(api, out: Path, repo: str, name: str, retries: int, sleep) -> bool:
 
 
 def run_job(name: str, cmd: str, out_dir, repo: str, max_seconds: int, *, api=None,
-            retries: int = 4, sleep=time.sleep) -> int:
+            retries: int = 4, sleep=None) -> int:
     api = api or _hub()
+    sleep = sleep or time.sleep
     ensure_repo(api, repo, private=True)  # refuse before spending GPU time on a public repo
+    if api.file_exists(repo, f"{name}/status.txt", repo_type="model"):
+        print(f"cloudjob: {name} already finished (status.txt in {repo}); not running it again")
+        return 0
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     rc, _ = _execute(cmd, out, max_seconds)
@@ -109,15 +122,47 @@ def run_job(name: str, cmd: str, out_dir, repo: str, max_seconds: int, *, api=No
     return rc
 
 
+def _terminate_pod() -> bool:
+    """Delete this pod through the platform API using the injected credentials."""
+    pod, key = os.environ.get("RUNPOD_POD_ID"), os.environ.get("RUNPOD_API_KEY")
+    if not (pod and key):
+        print("cloudjob: RUNPOD_POD_ID/RUNPOD_API_KEY not set; cannot terminate", file=sys.stderr)
+        return False
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(f"https://api.runpod.io/v2/pods/{pod}", method="DELETE",
+                                         headers={"Authorization": f"Bearer {key}",
+                                                  "User-Agent": "lmkit-cloudjob"})
+            with urllib.request.urlopen(req, timeout=30):
+                return True
+        except Exception as e:  # platform API blips: retry with backoff
+            print(f"cloudjob: terminate attempt {attempt + 1}/3 failed: {e}", file=sys.stderr)
+            time.sleep(2 ** attempt * 3)
+    return False
+
+
+def _hold(why: str) -> None:
+    """Keep the container alive: exiting would restart the job or lose the outputs."""
+    print(f"cloudjob: holding the pod: {why}", file=sys.stderr, flush=True)
+    while True:
+        time.sleep(3600)
+
+
 def main() -> int:
     need = ("LMKIT_JOB_NAME", "LMKIT_JOB_CMD", "LMKIT_OUT_REPO")
     missing = [k for k in need if not os.environ.get(k)]
     if missing:
         print(f"cloudjob: missing {', '.join(missing)}", file=sys.stderr)
         return 2
-    return run_job(os.environ["LMKIT_JOB_NAME"], os.environ["LMKIT_JOB_CMD"],
-                   os.environ.get("LMKIT_OUT_DIR", "/out"), os.environ["LMKIT_OUT_REPO"],
-                   int(os.environ.get("LMKIT_MAX_SECONDS", "21600")), api=_hub())
+    rc = run_job(os.environ["LMKIT_JOB_NAME"], os.environ["LMKIT_JOB_CMD"],
+                 os.environ.get("LMKIT_OUT_DIR", "/out"), os.environ["LMKIT_OUT_REPO"],
+                 int(os.environ.get("LMKIT_MAX_SECONDS", "21600")), api=_hub())
+    if os.environ.get("RUNPOD_POD_ID"):
+        if rc == UPLOAD_FAILED:
+            _hold("outputs were not uploaded and exist only in this container")
+        elif not _terminate_pod():
+            _hold("could not terminate the pod")
+    return rc
 
 
 if __name__ == "__main__":
