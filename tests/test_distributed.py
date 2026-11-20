@@ -165,3 +165,20 @@ def test_single_process_run_is_unchanged(tmp_path):
     tcfg, mcfg = _cfgs(tmp_path)
     assert pretrain.run(TinyLM(), tcfg, mcfg) == 0
     assert [e["event"] for e in _events(tmp_path)].count("done") == 1
+
+
+# --- bounded coalescing buffer --------------------------------------------------
+
+def test_coalesced_buckets_bound_the_flat_buffer_and_preserve_values():
+    ts = [torch.arange(n, dtype=torch.float32) for n in (10, 10, 10, 50, 5)]
+    want = [t.clone() for t in ts]
+    sizes = []
+
+    def double(flat):
+        sizes.append(flat.numel())
+        flat.mul_(2)
+
+    distributed._coalesced(ts, double, bucket_bytes=100 * 4 // 2)  # 50 elements
+    assert max(sizes) <= 50 and len(sizes) >= 2
+    for t, w in zip(ts, want):
+        assert torch.equal(t, w * 2)

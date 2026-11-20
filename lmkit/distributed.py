@@ -86,20 +86,33 @@ class Dist:
         _coalesced(grads, reduce)
 
 
-def _coalesced(tensors, collective) -> None:
-    """Run `collective` in place over one flat buffer per (device, dtype)."""
+_BUCKET_BYTES = 256 * 2**20
+
+
+def _coalesced(tensors, collective, bucket_bytes: int = _BUCKET_BYTES) -> None:
+    """Run `collective` in place over flat buffers of at most `bucket_bytes` per
+    (device, dtype). Bounded so a 12B-parameter broadcast does not need a second
+    copy of the model; a tensor larger than a bucket gets its own."""
     groups: dict[tuple, list[torch.Tensor]] = {}
     for t in tensors:
         groups.setdefault((t.device, t.dtype), []).append(t)
     with torch.no_grad():
         for group in groups.values():
-            flat = torch.cat([t.reshape(-1) for t in group])
-            collective(flat)
-            offset = 0
-            for t in group:
-                n = t.numel()
-                t.copy_(flat[offset:offset + n].view_as(t))
-                offset += n
+            bucket: list[torch.Tensor] = []
+            size = 0
+            for t in (*group, None):
+                if t is not None and (not bucket or size + t.nbytes <= bucket_bytes):
+                    bucket.append(t)
+                    size += t.nbytes
+                    continue
+                flat = torch.cat([b.reshape(-1) for b in bucket])
+                collective(flat)
+                offset = 0
+                for b in bucket:
+                    n = b.numel()
+                    b.copy_(flat[offset:offset + n].view_as(b))
+                    offset += n
+                bucket, size = ([t], t.nbytes) if t is not None else ([], 0)
 
 
 def init() -> Dist:
